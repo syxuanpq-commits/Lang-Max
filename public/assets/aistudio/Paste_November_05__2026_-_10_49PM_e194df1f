@@ -1,0 +1,707 @@
+import React, { useState, useEffect } from 'react';
+import { 
+  AdminTab, 
+  Deck, 
+  DeviceMode, 
+  Flashcard, 
+  QuizQuestion, 
+  StudentTab, 
+  ThemeMode, 
+  UserProfile,
+  isAuthorizedAdminEmail
+} from './types';
+import { 
+  INITIAL_DECKS, 
+  INITIAL_FLASHCARDS, 
+  INITIAL_QUIZ_QUESTIONS, 
+  INITIAL_STUDENTS 
+} from './data/mockData';
+import { generateQuizQuestions } from './utils/quizGenerator';
+import { sanitizeCardData } from './utils/aiPedagogy';
+import { safeGetItem, safeSetItem, safeRemoveItem } from './utils/storage';
+import { unlockAudioSession } from './utils/audio';
+import { Header } from './components/Header';
+import { Subnav } from './components/Subnav';
+import { BottomNavBar } from './components/BottomNavBar';
+import { DeviceFrame } from './components/DeviceFrame';
+import { AuthModal } from './components/AuthModal';
+import { ToastContainer, ToastMessage } from './components/Toast';
+import { WelcomeView } from './components/WelcomeView';
+
+// Student Views
+import { StudentDashboard } from './components/student/StudentDashboard';
+import { FlashcardView } from './components/student/FlashcardView';
+import { QuizView } from './components/student/QuizView';
+import { LeaderboardView } from './components/student/LeaderboardView';
+import { StudyHistoryView } from './components/student/StudyHistoryView';
+
+// Admin Views
+import { AdminDashboard } from './components/admin/AdminDashboard';
+import { StudentManagement } from './components/admin/StudentManagement';
+import { ImportCenter } from './components/admin/ImportCenter';
+import { CurriculumBank } from './components/admin/CurriculumBank';
+import { QuizManagement } from './components/admin/QuizManagement';
+
+export default function App() {
+  // Theme state (Default dark mode as in prototype)
+  const [theme, setTheme] = useState<ThemeMode>(() => {
+    const saved = safeGetItem('langmax_theme');
+    return (saved as ThemeMode) || 'dark';
+  });
+
+  // Device emulator mode
+  const [device, setDevice] = useState<DeviceMode>(() => {
+    const saved = safeGetItem('langmax_device');
+    return (saved as DeviceMode) || 'laptop';
+  });
+
+  // Language display mode (VI / EN / Bilingual)
+  const [lang, setLang] = useState<'vi' | 'en' | 'bilingual'>(() => {
+    const saved = safeGetItem('langmax_lang');
+    return (saved as 'vi' | 'en' | 'bilingual') || 'bilingual';
+  });
+
+  const handleToggleLang = () => {
+    const nextLang = lang === 'bilingual' ? 'vi' : lang === 'vi' ? 'en' : 'bilingual';
+    setLang(nextLang);
+    safeSetItem('langmax_lang', nextLang);
+  };
+
+  // Current logged in user
+  const [currentUser, setCurrentUser] = useState<UserProfile | null>(() => {
+    const saved = safeGetItem('langmax_user');
+    if (saved) {
+      try {
+        const u = JSON.parse(saved);
+        return {
+          ...u,
+          name: u.role === 'admin' ? 'Quản trị viên' : u.name,
+          completedLessons: 0,
+          quizScore: 0,
+          streakDays: 0
+        };
+      } catch {
+        return null;
+      }
+    }
+    return null;
+  });
+
+  // Navigation tabs
+  const [currentStudentTab, setCurrentStudentTab] = useState<StudentTab>('student-dashboard');
+  const [currentAdminTab, setCurrentAdminTab] = useState<AdminTab>('admin-dashboard');
+
+  // Core Data States
+  const [students, setStudents] = useState<UserProfile[]>(() => {
+    const saved = safeGetItem('langmax_students');
+    if (saved) {
+      try {
+        const parsed = JSON.parse(saved);
+        if (Array.isArray(parsed) && parsed.length > 0) return parsed;
+      } catch {}
+    }
+    return INITIAL_STUDENTS;
+  });
+
+  const [decks, setDecks] = useState<Deck[]>(() => {
+    const saved = safeGetItem('langmax_decks');
+    if (saved) {
+      try {
+        const parsed = JSON.parse(saved);
+        if (Array.isArray(parsed) && parsed.length > 0) return parsed;
+      } catch {}
+    }
+    return INITIAL_DECKS;
+  });
+
+  const [flashcards, setFlashcards] = useState<Flashcard[]>(() => {
+    const saved = safeGetItem('langmax_flashcards');
+    if (saved) {
+      try {
+        const parsed = JSON.parse(saved);
+        if (Array.isArray(parsed) && parsed.length > 0) return parsed.map(sanitizeCardData);
+      } catch {}
+    }
+    return INITIAL_FLASHCARDS.map(sanitizeCardData);
+  });
+
+  const [quizQuestions, setQuizQuestions] = useState<QuizQuestion[]>(() => {
+    const saved = safeGetItem('langmax_flashcards');
+    if (saved) {
+      try {
+        const parsed = JSON.parse(saved);
+        if (Array.isArray(parsed) && parsed.length > 0) {
+          return generateQuizQuestions(parsed);
+        }
+      } catch {}
+    }
+    return generateQuizQuestions(INITIAL_FLASHCARDS);
+  });
+  const [selectedDeckId, setSelectedDeckId] = useState<string>('all');
+
+  // Load and sync data from Backend API (for cross-device phone/laptop real-time data sync)
+  useEffect(() => {
+    fetch('/api/data')
+      .then(res => res.json())
+      .then(data => {
+        if (data.success) {
+          if (Array.isArray(data.flashcards) && data.flashcards.length > 0) {
+            setFlashcards(prev => {
+              const map = new Map();
+              [...data.flashcards, ...prev].forEach(c => map.set(c.id, sanitizeCardData(c)));
+              const merged = Array.from(map.values()) as Flashcard[];
+              safeSetItem('langmax_flashcards', JSON.stringify(merged));
+              setQuizQuestions(generateQuizQuestions(merged));
+              return merged;
+            });
+          }
+          if (Array.isArray(data.decks) && data.decks.length > 0) {
+            setDecks(prev => {
+              const map = new Map();
+              [...data.decks, ...prev].forEach(d => map.set(d.id, d));
+              const merged = Array.from(map.values()) as Deck[];
+              safeSetItem('langmax_decks', JSON.stringify(merged));
+              return merged;
+            });
+          }
+          if (Array.isArray(data.students) && data.students.length > 0) {
+            setStudents(prev => {
+              const map = new Map();
+              [...data.students, ...prev].forEach(s => map.set(s.id || s.email, s));
+              const merged = Array.from(map.values()) as UserProfile[];
+              safeSetItem('langmax_students', JSON.stringify(merged));
+              return merged;
+            });
+          }
+        }
+      })
+      .catch(err => {
+        console.warn('Backend data load offline fallback to safe storage:', err);
+      });
+
+    // Realtime storage listener across multiple browser tabs
+    const handleStorageChange = (e: StorageEvent) => {
+      if (e.key === 'langmax_flashcards' && e.newValue) {
+        try {
+          const cards = JSON.parse(e.newValue);
+          setFlashcards(cards);
+          setQuizQuestions(generateQuizQuestions(cards));
+        } catch {}
+      }
+      if (e.key === 'langmax_decks' && e.newValue) {
+        try { setDecks(JSON.parse(e.newValue)); } catch {}
+      }
+      if (e.key === 'langmax_students' && e.newValue) {
+        try { setStudents(JSON.parse(e.newValue)); } catch {}
+      }
+    };
+    window.addEventListener('storage', handleStorageChange);
+    return () => window.removeEventListener('storage', handleStorageChange);
+  }, []);
+
+  // UI Modals & Toasts
+  const [isAuthModalOpen, setIsAuthModalOpen] = useState(false);
+  const [toasts, setToasts] = useState<ToastMessage[]>([]);
+
+  // Apply Theme to document root & body
+  useEffect(() => {
+    const root = document.documentElement;
+    if (theme === 'dark') {
+      root.classList.add('dark');
+      root.style.colorScheme = 'dark';
+    } else {
+      root.classList.remove('dark');
+      root.style.colorScheme = 'light';
+    }
+    safeSetItem('langmax_theme', theme);
+  }, [theme]);
+
+  // Persist device
+  useEffect(() => {
+    safeSetItem('langmax_device', device);
+  }, [device]);
+
+  // Reset active session metrics to 0 if needed
+  useEffect(() => {
+    if (currentUser && (currentUser.completedLessons !== 0 || currentUser.quizScore !== 0 || currentUser.streakDays !== 0)) {
+      setCurrentUser(prev => prev ? {
+        ...prev,
+        completedLessons: 0,
+        quizScore: 0,
+        streakDays: 0
+      } : null);
+    }
+  }, []);
+
+  // Mobile Audio Session unlocker on first touch anywhere in the app
+  useEffect(() => {
+    const handleUnlock = () => {
+      unlockAudioSession();
+    };
+
+    window.addEventListener('touchstart', handleUnlock, { passive: true, once: true });
+    window.addEventListener('touchend', handleUnlock, { passive: true, once: true });
+    window.addEventListener('click', handleUnlock, { passive: true, once: true });
+
+    return () => {
+      window.removeEventListener('touchstart', handleUnlock);
+      window.removeEventListener('touchend', handleUnlock);
+      window.removeEventListener('click', handleUnlock);
+    };
+  }, []);
+
+  // Persist user
+  useEffect(() => {
+    if (currentUser) {
+      safeSetItem('langmax_user', JSON.stringify(currentUser));
+    } else {
+      safeRemoveItem('langmax_user');
+    }
+  }, [currentUser]);
+
+  // Persist students
+  useEffect(() => {
+    safeSetItem('langmax_students', JSON.stringify(students));
+  }, [students]);
+
+  // Persist decks
+  useEffect(() => {
+    safeSetItem('langmax_decks', JSON.stringify(decks));
+  }, [decks]);
+
+  // Persist flashcards
+  useEffect(() => {
+    safeSetItem('langmax_flashcards', JSON.stringify(flashcards));
+  }, [flashcards]);
+
+  // Toast Helper - disabled per user request: "bỏ thông báo khi thực hiện các thao tác"
+  const showToast = (_message?: string, _type?: 'success' | 'error' | 'info') => {
+    // Silent mode - all notification popups suppressed
+  };
+
+  const handleDismissToast = () => {};
+
+  const handleToggleTheme = () => {
+    setTheme((prev) => {
+      const next = prev === 'dark' ? 'light' : 'dark';
+      showToast(
+        next === 'dark' ? 'Đã bật chế độ Tối (Night Mode)' : 'Đã bật chế độ Sáng (Day Mode)',
+        'info'
+      );
+      return next;
+    });
+  };
+
+  const handleSetDevice = (newDevice: DeviceMode) => {
+    setDevice(newDevice);
+    const label =
+      newDevice === 'phone'
+        ? 'Điện thoại (Mobile)'
+        : newDevice === 'ipad'
+        ? 'Máy tính bảng (iPad)'
+        : 'Máy tính / Toàn màn hình';
+    showToast(`Đã chuyển sang khung xem: ${label}`, 'info');
+  };
+
+  const handleLogin = (user: UserProfile) => {
+    setCurrentUser(user);
+    setIsAuthModalOpen(false);
+    showToast(`Đăng nhập thành công với tư cách ${user.name}!`, 'success');
+  };
+
+  const handleLogout = () => {
+    setCurrentUser(null);
+    showToast('Đã đăng xuất tài khoản', 'info');
+  };
+
+  const handleQuickDemoLogin = (role: 'student' | 'admin') => {
+    if (role === 'student') {
+      const student = students[0] || {
+        id: 'std-1',
+        name: 'Nguyễn Văn An',
+        email: 'nguyenvana@gmail.com',
+        role: 'student' as const,
+        level: 'Intermediate' as const,
+        completedLessons: 0,
+        totalLessons: 25,
+        quizScore: 0,
+        streakDays: 0,
+        status: 'Hoạt động' as const,
+        joinedDate: '2026-10-01',
+        avatarColor: 'bg-emerald-600'
+      };
+      handleLogin(student);
+    } else {
+      if (currentUser && !isAuthorizedAdminEmail(currentUser.email)) {
+        showToast('Email này chưa được cấp quyền Quản trị viên.', 'error');
+        return;
+      }
+      const adminEmail = currentUser?.email && isAuthorizedAdminEmail(currentUser.email)
+        ? currentUser.email
+        : 'syxuantran@gmail.com';
+      const admin: UserProfile = {
+        id: 'admin-1',
+        name: 'Quản trị viên',
+        email: adminEmail,
+        role: 'admin',
+        level: 'Advanced',
+        completedLessons: 0,
+        totalLessons: 25,
+        quizScore: 0,
+        streakDays: 0,
+        status: 'Hoạt động',
+        joinedDate: '2026-01-01',
+        avatarColor: 'bg-amber-600'
+      };
+      handleLogin(admin);
+    }
+  };
+
+  // Data update handlers
+  const handleUpdateFlashcard = (updatedCard: Flashcard) => {
+    setFlashcards((prev) => {
+      const updated = prev.map((c) => (c.id === updatedCard.id ? updatedCard : c));
+      safeSetItem('langmax_flashcards', JSON.stringify(updated));
+      return updated;
+    });
+    fetch(`/api/flashcards/${updatedCard.id}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(updatedCard)
+    }).catch(() => {});
+  };
+
+  const handleImportFlashcards = (newCards: Flashcard[], targetDeckId: string) => {
+    // 1. Normalize cards with correct targetDeckId
+    const targetId = targetDeckId && targetDeckId !== 'all' 
+      ? targetDeckId 
+      : (decks[0]?.id || `deck-${Date.now()}`);
+    const normalizedCards = newCards.map(c => ({
+      ...c,
+      deckId: targetId
+    }));
+
+    // 2. Update flashcards state and generate new quiz questions
+    setFlashcards((prev) => {
+      const existingIds = new Set(prev.map(c => c.id));
+      const uniqueNew = normalizedCards.filter(c => !existingIds.has(c.id));
+      const updated = [...uniqueNew, ...prev];
+      safeSetItem('langmax_flashcards', JSON.stringify(updated));
+      
+      // Update Quiz questions dynamically so they run immediately on the Quiz interface!
+      const generatedQ = generateQuizQuestions(updated);
+      setQuizQuestions(generatedQ);
+
+      return updated;
+    });
+
+    // 3. Update deck card count accurately or create deck if not found
+    setDecks((prev) => {
+      const deckExists = prev.some(d => d.id === targetId);
+      let updated: Deck[];
+      if (!deckExists) {
+        const newDeckObj: Deck = {
+          id: targetId,
+          title: 'Học Phần Nhập Mới',
+          description: 'Học phần bổ sung được tạo từ tài liệu học tập vừa nhập.',
+          level: 'Intermediate',
+          category: 'Chuyên đề',
+          icon: 'layers',
+          cardCount: normalizedCards.length
+        };
+        updated = [newDeckObj, ...prev];
+      } else {
+        updated = prev.map((d) => {
+          if (d.id === targetId) {
+            const currentCount = flashcards.filter(c => c.deckId === d.id).length;
+            return { ...d, cardCount: currentCount + normalizedCards.length };
+          }
+          return d;
+        });
+      }
+      safeSetItem('langmax_decks', JSON.stringify(updated));
+      return updated;
+    });
+
+    // 4. Send to backend server to persist across devices & tabs
+    fetch('/api/flashcards/import', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ newCards: normalizedCards, targetDeckId: targetId })
+    }).catch(err => console.warn('Sync to backend failed:', err));
+
+    showToast(`Đã đồng bộ ${normalizedCards.length} từ vựng vào bài học và tạo câu hỏi Quiz mới!`, 'success');
+  };
+
+  const handleDeleteFlashcard = (cardId: string) => {
+    setFlashcards((prev) => {
+      const updated = prev.filter((c) => c.id !== cardId);
+      safeSetItem('langmax_flashcards', JSON.stringify(updated));
+      setQuizQuestions(generateQuizQuestions(updated));
+      return updated;
+    });
+    fetch(`/api/flashcards/${cardId}`, { method: 'DELETE' }).catch(() => {});
+  };
+
+  const handleCreateDeck = (newDeck: Deck) => {
+    setDecks((prev) => {
+      const updated = [newDeck, ...prev];
+      safeSetItem('langmax_decks', JSON.stringify(updated));
+      return updated;
+    });
+    fetch('/api/decks', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ newDeck })
+    }).catch(() => {});
+    showToast(`Đã tạo bộ từ vựng mới: "${newDeck.title}"`, 'success');
+  };
+
+  const handleDeleteDeck = (deckId: string) => {
+    setDecks((prev) => {
+      const updated = prev.filter((d) => d.id !== deckId);
+      safeSetItem('langmax_decks', JSON.stringify(updated));
+      return updated;
+    });
+
+    setFlashcards((prev) => {
+      const updated = prev.filter((c) => c.deckId !== deckId);
+      safeSetItem('langmax_flashcards', JSON.stringify(updated));
+      setQuizQuestions(generateQuizQuestions(updated));
+      return updated;
+    });
+
+    fetch(`/api/decks/${deckId}`, { method: 'DELETE' }).catch(() => {});
+  };
+
+  const handleAddStudent = (newStudent: UserProfile) => {
+    setStudents((prev) => {
+      const updated = [newStudent, ...prev];
+      safeSetItem('langmax_students', JSON.stringify(updated));
+      return updated;
+    });
+    fetch('/api/students', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ student: newStudent })
+    }).catch(() => {});
+  };
+
+  const handleUpdateStudent = (updatedStudent: UserProfile) => {
+    setStudents((prev) => {
+      const updated = prev.map((s) => (s.id === updatedStudent.id ? updatedStudent : s));
+      safeSetItem('langmax_students', JSON.stringify(updated));
+      return updated;
+    });
+    if (currentUser?.id === updatedStudent.id) {
+      setCurrentUser(updatedStudent);
+    }
+    fetch('/api/students', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ student: updatedStudent })
+    }).catch(() => {});
+  };
+
+  const handleDeleteStudent = (studentId: string) => {
+    setStudents((prev) => {
+      const updated = prev.filter((s) => s.id !== studentId);
+      safeSetItem('langmax_students', JSON.stringify(updated));
+      return updated;
+    });
+    if (currentUser?.id === studentId) {
+      setCurrentUser(null);
+    }
+    fetch(`/api/students/${studentId}`, { method: 'DELETE' }).catch(() => {});
+  };
+
+  const handleSaveStudentPassword = (email: string, password: string, name?: string) => {
+    setStudents((prev) => {
+      const updated = prev.map(s => 
+        s.email.toLowerCase() === email.toLowerCase() 
+          ? { ...s, password, hasPassword: true, name: name || s.name } 
+          : s
+      );
+      safeSetItem('langmax_students', JSON.stringify(updated));
+      return updated;
+    });
+    fetch('/api/auth/register-password', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email, password, name })
+    }).catch(() => {});
+    showToast(`Đã thiết lập mật khẩu đăng nhập cho email: ${email}`, 'success');
+  };
+
+  const handleUpdateQuizScore = (earnedPoints: number) => {
+    if (!currentUser || currentUser.role !== 'student') return;
+    const updatedUser: UserProfile = {
+      ...currentUser,
+      quizScore: currentUser.quizScore + earnedPoints
+    };
+    handleUpdateStudent(updatedUser);
+  };
+
+  return (
+    <div className={`${theme === 'dark' ? 'dark' : ''} flex flex-col h-screen w-screen overflow-hidden bg-slate-100 dark:bg-zinc-950 text-slate-800 dark:text-slate-100`}>
+      {/* Top Application Navigation Bar */}
+      <Header
+        device={device}
+        onSetDevice={handleSetDevice}
+        theme={theme}
+        onToggleTheme={handleToggleTheme}
+        currentUser={currentUser}
+        onOpenLogin={() => setIsAuthModalOpen(true)}
+        onLogout={handleLogout}
+        onQuickSwitchRole={(role) => handleQuickDemoLogin(role)}
+      />
+
+      {/* Main Workspace Frame (Emulator for Phone/iPad or Fullscreen) */}
+      <main className="flex-1 overflow-hidden flex flex-col relative">
+        <DeviceFrame device={device}>
+          {/* Internal Subnav */}
+          <Subnav
+            device={device}
+            currentUser={currentUser}
+            currentStudentTab={currentStudentTab}
+            currentAdminTab={currentAdminTab}
+            onSelectStudentTab={setCurrentStudentTab}
+            onSelectAdminTab={setCurrentAdminTab}
+            onOpenLogin={() => setIsAuthModalOpen(true)}
+          />
+
+          {/* Body Content Area - calibrated padding per device */}
+          <div className={`flex-1 overflow-y-auto bg-slate-50 dark:bg-zinc-900/40 ${
+            device === 'phone' ? 'p-3' : device === 'ipad' ? 'p-4 sm:p-6' : 'p-3 sm:p-6 lg:p-8'
+          }`}>
+            {!currentUser ? (
+              <WelcomeView
+                onOpenLogin={() => setIsAuthModalOpen(true)}
+                onQuickDemoLogin={handleQuickDemoLogin}
+              />
+            ) : currentUser.role === 'student' ? (
+              <>
+                {currentStudentTab === 'student-dashboard' && (
+                  <StudentDashboard
+                    currentUser={currentUser}
+                    decks={decks}
+                    flashcards={flashcards}
+                    onNavigateTab={setCurrentStudentTab}
+                    onSelectDeck={setSelectedDeckId}
+                    onShowToast={showToast}
+                  />
+                )}
+
+                {currentStudentTab === 'student-flashcard' && (
+                  <FlashcardView
+                    decks={decks}
+                    flashcards={flashcards}
+                    selectedDeckId={selectedDeckId}
+                    onSelectDeck={setSelectedDeckId}
+                    onUpdateFlashcard={handleUpdateFlashcard}
+                    onShowToast={showToast}
+                  />
+                )}
+
+                {currentStudentTab === 'student-quiz' && (
+                  <QuizView
+                    questions={quizQuestions}
+                    currentUser={currentUser}
+                    onUpdateScore={handleUpdateQuizScore}
+                    onShowToast={showToast}
+                  />
+                )}
+
+                {currentStudentTab === 'student-leaderboard' && (
+                  <LeaderboardView
+                    students={students}
+                    currentUser={currentUser}
+                  />
+                )}
+
+                {currentStudentTab === 'student-history' && (
+                  <StudyHistoryView
+                    currentUser={currentUser}
+                    flashcards={flashcards}
+                  />
+                )}
+              </>
+            ) : (
+              <>
+                {currentAdminTab === 'admin-dashboard' && (
+                  <AdminDashboard
+                    students={students}
+                    flashcards={flashcards}
+                    onNavigateTab={setCurrentAdminTab}
+                  />
+                )}
+
+                {currentAdminTab === 'admin-students' && (
+                  <StudentManagement
+                    students={students}
+                    onAddStudent={handleAddStudent}
+                    onUpdateStudent={handleUpdateStudent}
+                    onDeleteStudent={handleDeleteStudent}
+                    onShowToast={showToast}
+                  />
+                )}
+
+                {currentAdminTab === 'admin-import' && (
+                  <ImportCenter
+                    decks={decks}
+                    onImportFlashcards={handleImportFlashcards}
+                    onShowToast={showToast}
+                  />
+                )}
+
+                {currentAdminTab === 'admin-curriculum' && (
+                  <CurriculumBank
+                    decks={decks}
+                    flashcards={flashcards}
+                    onCreateDeck={handleCreateDeck}
+                    onDeleteDeck={handleDeleteDeck}
+                    onDeleteFlashcard={handleDeleteFlashcard}
+                    onShowToast={showToast}
+                  />
+                )}
+
+                {currentAdminTab === 'admin-quiz' && (
+                  <QuizManagement
+                    quizQuestions={quizQuestions}
+                    decks={decks}
+                    flashcards={flashcards}
+                    onUpdateQuestions={setQuizQuestions}
+                    onShowToast={showToast}
+                  />
+                )}
+              </>
+            )}
+          </div>
+
+          {/* Bottom Mobile Navigation Bar (Fixed in thumb zone for phone mode or mobile viewport) */}
+          <div className={device === 'phone' ? 'block shrink-0' : 'block md:hidden shrink-0'}>
+            <BottomNavBar
+              currentUser={currentUser}
+              currentStudentTab={currentStudentTab}
+              currentAdminTab={currentAdminTab}
+              onSelectStudentTab={setCurrentStudentTab}
+              onSelectAdminTab={setCurrentAdminTab}
+            />
+          </div>
+        </DeviceFrame>
+      </main>
+
+      {/* Auth Modal */}
+      <AuthModal
+        isOpen={isAuthModalOpen}
+        onClose={() => setIsAuthModalOpen(false)}
+        onLogin={handleLogin}
+        availableStudents={students}
+        onSaveStudentPassword={handleSaveStudentPassword}
+      />
+
+      {/* Toast Notification Container */}
+      <ToastContainer toasts={toasts} onDismiss={handleDismissToast} />
+    </div>
+  );
+}

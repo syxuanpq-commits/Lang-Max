@@ -1,0 +1,7 @@
+{
+  "name": "LangMax - English Learning & Flashcard System",
+  "description": "Nền tảng học từ vựng Flashcard, câu hỏi trắc nghiệm thông minh, quản trị học viên và ngân hàng học phần đa thiết bị.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
+
